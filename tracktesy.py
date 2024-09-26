@@ -3,57 +3,51 @@ import pandas as pd
 from datetime import datetime
 import re
 from pymongo import MongoClient
+import os
 
-# MongoDB Atlas connection string
-client = MongoClient("mongodb+srv://test:test@cluster0.qdyup.mongodb.net/")
-db = client['item_changes']  # 'item_changes' is the database name
-changes_collection = db.changes  # 'changes' is the collection name
+# Securely fetch the connection string
+mongo_conn_str = os.getenv("MONGO_CONN_STR")
+client = MongoClient(mongo_conn_str)
+db = client['item_changes']
+changes_collection = db.changes
 
-def log_changes_to_db(item_numbers, changes, name, change_options, notes):
+def log_changes_to_db(item_numbers, changes, name, notes):
     date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    entries = []
     for item in item_numbers:
         document = {
             "item_number": item,
             "date": date,
             "entered_by": name,
-            "price_change": 'Yes' if "Price Change" in changes else 'No',
-            "description_update": 'Yes' if "Description Update" in changes else 'No',
-            "discontinued": 'Yes' if "Discontinued" in changes else 'No',
-            "quantity_adjustment": 'Yes' if "Quantity Adjustment" in changes else 'No',
-            "category_change": 'Yes' if "Category Change" in changes else 'No',
+            **{change: 'Yes' for change in changes},
             "notes": notes
         }
-        changes_collection.insert_one(document)
+        entries.append(document)
+    changes_collection.insert_many(entries)
 
-def fetch_changes():
-    return pd.DataFrame(list(changes_collection.find({}, {'_id': 0})))  # Excludes the MongoDB '_id' from the DataFrame
+def fetch_changes(limit=100):
+    # Fetch the latest 100 changes by default
+    return pd.DataFrame(list(changes_collection.find({}, {'_id': 0}).sort("date", -1).limit(limit)))
 
-# Streamlit app layout
 st.title("Item Change Tracker")
-cols1 = st.columns((1,1))
-item_numbers_input = cols1[0].text_area("Enter Item Numbers (space, comma, or newline separated)", height=300)
+item_numbers_input = st.text_area("Enter Item Numbers (space, comma, or newline separated)", height=150)
 names = ["John Doe", "Jane Smith", "Mark Johnson", "Emily Davis"]
-name = cols1[1].selectbox("Select Your Name", names)
-
-cols2 = st.columns((1,1))
+name = st.selectbox("Select Your Name", names)
 change_options = ["Price Change", "Description Update", "Discontinued", "Quantity Adjustment", "Category Change"]
-changes = cols2[0].multiselect("Select Changes", change_options)
-notes = cols2[1].text_area("Enter Additional Notes", height=300)
+changes = st.multiselect("Select Changes", change_options)
+notes = st.text_area("Enter Additional Notes", height=150)
 
 if st.button("Log Changes"):
-    if item_numbers_input and changes and name:
-        item_numbers = re.split(r'[,\s\n]+', item_numbers_input.strip())
-        item_numbers = [i for i in item_numbers if i]
-        if not item_numbers:
-            st.error("No valid item numbers provided.")
-        else:
-            try:
-                log_changes_to_db(item_numbers, changes, name, change_options, notes)
-                st.success("Changes have been logged successfully.")
-                df = fetch_changes()
-                st.subheader("Updated Change Log")
-                st.dataframe(df)
-            except Exception as e:
-                st.error(f"Error: {e}")
+    item_numbers = re.split(r'[,\s\n]+', item_numbers_input.strip())
+    item_numbers = [i for i in item_numbers if i]
+    if item_numbers and changes:
+        try:
+            log_changes_to_db(item_numbers, changes, name, notes)
+            st.success("Changes have been logged successfully.")
+            df = fetch_changes()
+            st.subheader("Recent Change Log")
+            st.dataframe(df)
+        except Exception as e:
+            st.error(f"Error logging changes: {e}")
     else:
-        st.error("Please enter item numbers, select changes, and select your name.")
+        st.error("Please check your input. Ensure item numbers and changes are correctly specified.")
